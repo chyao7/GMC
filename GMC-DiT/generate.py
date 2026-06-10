@@ -13,17 +13,27 @@ from torchvision.utils import save_image
 
 GMC_DIT = os.path.dirname(__file__)
 GMC_ROOT = os.path.abspath(os.path.join(GMC_DIT, '..'))
-DIT_ROOT = os.environ.get('DIT_ROOT', os.path.join(GMC_ROOT, 'DiT'))
-CKPT = os.environ.get(
-    'DIT_CKPT',
-    os.path.join(DIT_ROOT, 'pretrained_models/DiT-XL-2-256x256.pt'),
-)
-VAE_PATH = os.environ.get('VAE_PATH', 'stabilityai/sd-vae-ft-mse')
+DIT_ROOT = os.path.normpath(os.path.join(GMC_DIT, '..', 'DiT'))
+CKPT = os.path.join(DIT_ROOT, 'pretrained_models/DiT-XL-2-256x256.pt')
+def _resolve_vae_path() -> str:
+    if os.environ.get('VAE_PATH'):
+        return os.environ['VAE_PATH']
+    for name in ('sd-vae-ft-mse', 'sd-vae-ft-ema'):
+        local = os.path.join(GMC_ROOT, 'pretrained_models', name)
+        if os.path.isfile(os.path.join(local, 'config.json')):
+            return local
+    return 'stabilityai/sd-vae-ft-mse'
+
+
+VAE_PATH = _resolve_vae_path()
 
 if not os.path.isdir(os.path.join(DIT_ROOT, 'diffusion')):
+    hint = ''
+    if os.environ.get('DIT_ROOT'):
+        hint = '\n提示：请执行 unset DIT_ROOT DIT_CKPT，避免旧环境变量干扰。'
     raise FileNotFoundError(
         f'未找到 DiT 工程：{DIT_ROOT}\n'
-        '请先运行：bash scripts/setup_dit.sh'
+        f'请先运行：cd {GMC_ROOT} && bash scripts/setup_dit.sh{hint}'
     )
 
 sys.path.insert(0, DIT_ROOT)

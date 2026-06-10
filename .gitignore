@@ -1,4 +1,6 @@
-
+# DiT 源码已纳入仓库；权重通过 scripts/setup_dit.sh 下载
+DiT/pretrained_models/*.pt
+pretrained_models/
 __pycache__/
 *.py[cod]
 *.egg-info/
