@@ -93,6 +93,7 @@ def main():
     if not args.no_cache:
         apply_gmc_blocks(model)
         _patch_cache_init(gmc_cfg)
+        model.to(device=device, dtype=torch.float16)
 
     vae = AutoencoderKL.from_pretrained(args.vae_path).to(device)
     t5 = T5Embedder(

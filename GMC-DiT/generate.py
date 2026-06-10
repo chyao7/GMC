@@ -12,9 +12,60 @@ from diffusers.models import AutoencoderKL
 from torchvision.utils import save_image
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
-DIT_ROOT = os.environ.get('DIT_ROOT', os.path.join(ROOT, 'DiT'))
 GMC_DIT = os.path.dirname(__file__)
 GMC_ROOT = os.path.join(GMC_DIT, '..')
+
+
+def _resolve_dit_root() -> str:
+    env = os.environ.get('DIT_ROOT')
+    if env and os.path.isdir(env):
+        return env
+    for cand in (
+        '/home/chyao/projects/ToCa/DiT',
+        os.path.join(ROOT, 'ToCa', 'DiT-ToCa'),
+        os.path.join(ROOT, 'DiT-ToCa'),
+        os.path.join(ROOT, 'DiT'),
+    ):
+        if os.path.isdir(cand) and os.path.isdir(os.path.join(cand, 'diffusion')):
+            return cand
+    raise FileNotFoundError(
+        '找不到 DiT 代码目录（需含 diffusion/）。'
+        '请设置环境变量 DIT_ROOT，例如：\n'
+        '  export DIT_ROOT=/home/chyao/projects/ToCa/DiT'
+    )
+
+
+def _resolve_ckpt(dit_root: str) -> str:
+    env = os.environ.get('DIT_CKPT')
+    if env and os.path.isfile(env):
+        return env
+    for cand in (
+        os.path.join(dit_root, 'pretrained_models/DiT-XL-2-256x256.pt'),
+        '/home/chyao/projects/ToCa/DiT/pretrained_models/DiT-XL-2-256x256.pt',
+    ):
+        if os.path.isfile(cand):
+            return cand
+    return os.path.join(dit_root, 'pretrained_models/DiT-XL-2-256x256.pt')
+
+
+def _resolve_vae_path() -> str:
+    env = os.environ.get('VAE_PATH')
+    if env:
+        return env
+    for cand in (
+        '/home/chyao/projects/ToCa/pretrained_models/sd-vae-ft-ema',
+        'stabilityai/sd-vae-ft-mse',
+    ):
+        if cand.startswith('/') and os.path.isdir(cand):
+            return cand
+        if not cand.startswith('/'):
+            return cand
+    return 'stabilityai/sd-vae-ft-mse'
+
+
+DIT_ROOT = _resolve_dit_root()
+CKPT = _resolve_ckpt(DIT_ROOT)
+VAE_PATH = _resolve_vae_path()
 
 sys.path.insert(0, ROOT)
 sys.path.insert(0, DIT_ROOT)
@@ -24,12 +75,6 @@ sys.path.insert(0, GMC_DIT)
 from diffusion import create_diffusion  # noqa: E402
 from config import ALL_PRESETS  # noqa: E402
 from gmc_model import DiTWithGMC  # noqa: E402
-
-CKPT = os.environ.get(
-    'DIT_CKPT',
-    os.path.join(DIT_ROOT, 'pretrained_models/DiT-XL-2-256x256.pt'),
-)
-VAE_PATH = os.environ.get('VAE_PATH', 'stabilityai/sd-vae-ft-mse')
 
 
 def load_ckpt(model, path: str):
