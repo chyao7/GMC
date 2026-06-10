@@ -11,9 +11,9 @@ import torch
 from diffusers.models import AutoencoderKL
 from torchvision.utils import save_image
 
-GMC_DIT = os.path.dirname(__file__)
-GMC_ROOT = os.path.abspath(os.path.join(GMC_DIT, '..'))
-DIT_ROOT = os.path.normpath(os.path.join(GMC_DIT, '..', 'DiT'))
+GMC_DIT = os.path.dirname(os.path.abspath(__file__))
+GMC_ROOT = os.path.dirname(GMC_DIT)
+DIT_ROOT = os.path.join(GMC_ROOT, 'DiT')
 CKPT = os.path.join(DIT_ROOT, 'pretrained_models/DiT-XL-2-256x256.pt')
 def _resolve_vae_path() -> str:
     if os.environ.get('VAE_PATH'):
@@ -23,6 +23,20 @@ def _resolve_vae_path() -> str:
         if os.path.isfile(os.path.join(local, 'config.json')):
             return local
     return 'stabilityai/sd-vae-ft-mse'
+
+
+def _load_vae(path: str, device: str) -> AutoencoderKL:
+    if os.path.isdir(path):
+        print(f'[VAE] 本地: {path}')
+        return AutoencoderKL.from_pretrained(path).to(device)
+    # 无本地 VAE 时走镜像，避免直连 huggingface.co 超时
+    os.environ.setdefault('HF_ENDPOINT', 'https://hf-mirror.com')
+    print(
+        f'[VAE] 从 HuggingFace 加载: {path} '
+        f'(HF_ENDPOINT={os.environ["HF_ENDPOINT"]})\n'
+        f'      建议先运行: bash scripts/setup_dit.sh'
+    )
+    return AutoencoderKL.from_pretrained(path).to(device)
 
 
 VAE_PATH = _resolve_vae_path()
@@ -90,7 +104,7 @@ def main():
     diffusion = create_diffusion(str(args.steps))
     model.set_sampling_steps(args.steps)
 
-    vae = AutoencoderKL.from_pretrained(args.vae_path).to(device)
+    vae = _load_vae(args.vae_path, device)
     vae.eval()
 
     n = 2 if args.cfg > 1.0 else 1
