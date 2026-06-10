@@ -10,6 +10,8 @@ build/
 *.pt
 *.pth
 *.png
+!DiT/visuals/
+!DiT/visuals/**
 *.jpg
 .env
 .venv/
