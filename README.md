@@ -8,6 +8,7 @@
 GMC/
 ├── gmc_utils.py          # 共享：GMCConfig、SA/CA 步级调度、MLP token 级缓存
 ├── test_gmc.py           # 无 GPU 单元测试
+├── DiT/                  # 官方 DiT 工程（facebookresearch/DiT）
 ├── GMC-DiT/              # 类条件 DiT-XL/2
 │   ├── gmc_model.py      # DiTWithGMC
 │   ├── config.py         # 默认/消融 preset
@@ -39,11 +40,12 @@ python GMC/test_gmc.py
 
 ### DiT-XL/2（GMC-DiT）
 
-```bash
-export DIT_ROOT=/path/to/DiT
-export DIT_CKPT=/path/to/DiT-XL-2-256x256.pt
+仓库已包含 `DiT/` 源码；首次使用需下载预训练权重（约 2.5GB）：
 
-python GMC/GMC-DiT/generate.py \
+```bash
+bash scripts/setup_dit.sh
+
+python GMC-DiT/generate.py \
   --preset default \
   --class_id 207 \
   --out sample.png
