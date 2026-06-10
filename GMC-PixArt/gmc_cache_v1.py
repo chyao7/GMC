@@ -24,7 +24,7 @@ def gmc_cache_init(gmc_cfg: GMCConfig, num_steps: int, depth: int = 28):
         'gmc_mode': True,
         'gmc_cfg': gmc_cfg,
         'gmc_layers': {i: LayerCacheState() for i in range(depth)},
-        'sa_refresh': build_sa_refresh_mask(gmc_cfg, num_steps, depth),
+        'sa_refresh': build_sa_refresh_mask(gmc_cfg, num_steps),
         'ca_refresh': build_ca_refresh_mask(gmc_cfg, num_steps, depth),
         'layer_rho': build_layer_fresh_ratios(gmc_cfg, depth),
         'stats': {
@@ -49,7 +49,7 @@ def reset_gmc_cache(cache_dic: dict, depth: int = 28) -> None:
             build_layer_fresh_ratios,
             build_sa_refresh_mask,
         )
-        cache_dic['sa_refresh'] = build_sa_refresh_mask(gmc_cfg, num_steps, depth)
+        cache_dic['sa_refresh'] = build_sa_refresh_mask(gmc_cfg, num_steps)
         cache_dic['ca_refresh'] = build_ca_refresh_mask(gmc_cfg, num_steps, depth)
         cache_dic['layer_rho'] = build_layer_fresh_ratios(gmc_cfg, depth)
     cache_dic['stats'] = {

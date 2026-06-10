@@ -178,7 +178,7 @@ class PixArtBlockGMC(nn.Module):
         stats = cache_dic['stats']
         state = self._layer_state(cache_dic)
         step = current['step']
-        sa_refresh = cache_dic['sa_refresh'][self.layer_idx][step]
+        sa_refresh = cache_dic['sa_refresh'][step]
         ca_refresh = cache_dic['ca_refresh'][self.layer_idx][step]
         layer_fresh_ratio = cache_dic['layer_rho'][self.layer_idx]
 
@@ -209,9 +209,6 @@ class PixArtBlockGMC(nn.Module):
         x = x + ca_out
 
         mlp_input = t2i_modulate(self.norm2(x), shift_mlp, scale_mlp)
-        if not cfg.enable_mlp_cache:
-            mlp_out = self.mlp(mlp_input)
-            return x + self.drop_path(gate_mlp * mlp_out)
         score_map = state.cross_attn_map if state.cross_attn_map is not None else attn_map
         return self._forward_mlp_gmc(
             x, mlp_input, gate_mlp, cfg, state, step, score_map, stats,

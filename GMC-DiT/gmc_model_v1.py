@@ -264,14 +264,11 @@ class DiTBlockWithGMC(nn.Module):
             attn_out = state.attn_out
 
         x = x + gate_msa.unsqueeze(1) * attn_out
-        if not gmc_cfg.enable_mlp_cache:
-            mlp_out = self.mlp(mlp_input_fn(x))
-        else:
-            attn_map = getattr(self.attn, 'last_attn_map', None)
-            full_refresh = compute_sa
-            mlp_out = self._forward_mlp_cached(
-                x, mlp_input_fn, gmc_cfg, state, b, n, attn_map, full_refresh, self._cached_fresh_ratio,
-            )
+        attn_map = getattr(self.attn, 'last_attn_map', None)
+        full_refresh = compute_sa
+        mlp_out = self._forward_mlp_cached(
+            x, mlp_input_fn, gmc_cfg, state, b, n, attn_map, full_refresh, self._cached_fresh_ratio,
+        )
         x = x + gate_mlp.unsqueeze(1) * mlp_out
         return x
 
@@ -283,21 +280,11 @@ class DiTBlockWithGMC(nn.Module):
         if self.use_cache and cache_ctx is not None:
             def mlp_input_fn(h):
                 return modulate(self.norm2(h), shift_mlp, scale_mlp)
-            step = cache_ctx['step']
-            sa_refresh = cache_ctx['sa_refresh']
-            compute_sa = (
-                sa_refresh[self.layer_idx][step]
-                if sa_refresh
-                else is_full_refresh_step(
-                    cache_ctx['gmc_cfg'], step, cache_ctx['num_steps'],
-                    self.layer_idx, self.depth,
-                )
-            )
             return self._forward_cached(
                 x, attn_input, mlp_input_fn,
                 gate_msa, gate_mlp,
                 cache_ctx['gmc_cfg'],
-                compute_sa,
+                cache_ctx['compute_sa'],
             )
 
         attn_out = self.attn(attn_input, store_attn_map=False)
@@ -335,7 +322,7 @@ class DiTWithGMC(nn.Module):
         self.gmc_config = gmc_config or GMCConfig()
         self.total_sampling_steps = total_sampling_steps
         self._diffusion_step = 0
-        self._sa_refresh: list[list[bool]] = []
+        self._sa_refresh: list[bool] = []
         self._layer_fresh_ratios: list[float] = []
 
         self.x_embedder = PatchEmbed(input_size, patch_size, in_channels, hidden_size, bias=True)
@@ -359,7 +346,7 @@ class DiTWithGMC(nn.Module):
     def _rebuild_schedules(self) -> None:
         steps = self.total_sampling_steps
         cfg = self.gmc_config
-        self._sa_refresh = build_sa_refresh_mask(cfg, steps, self.depth)
+        self._sa_refresh = build_sa_refresh_mask(cfg, steps)
         self._layer_fresh_ratios = build_layer_fresh_ratios(cfg, self.depth)
         for i, block in enumerate(self.blocks):
             block.set_fresh_ratio(self._layer_fresh_ratios[i])
@@ -437,11 +424,15 @@ class DiTWithGMC(nn.Module):
     def _cache_context(self) -> dict:
         step = self._diffusion_step
         num_steps = self.total_sampling_steps
+        if self._sa_refresh:
+            compute_sa = self._sa_refresh[step]
+        else:
+            compute_sa = is_full_refresh_step(self.gmc_config, step, num_steps)
         return {
             'gmc_cfg': self.gmc_config,
             'step': step,
             'num_steps': num_steps,
-            'sa_refresh': self._sa_refresh,
+            'compute_sa': compute_sa,
         }
 
     def forward(self, x: torch.Tensor, t: torch.Tensor, y: torch.Tensor):

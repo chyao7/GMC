@@ -1,11 +1,9 @@
 """Granularity-Matched Caching (GMC) 共享工具。
 
 对应论文 §3.3–§3.4：
-- Self-attention：n 步循环调度（v2），周期第一步全算，后续 n-1 步复用该步缓存
+- Self-attention / Cross-attention：步级复用，默认间隔 n=4
 - Cross-attention 尾段（后 T_tail 步 & 深层 L>=L_ca）：间隔 floor(n/2)
 - MLP：分层 token 级 fresh 比例 + linear stale 外推
-
-v1 步级等间隔调度见 ``gmc_utils_v1.py``。
 """
 
 from __future__ import annotations
@@ -23,8 +21,6 @@ class GMCConfig:
     """GMC 默认超参与论文一致。"""
 
     attn_interval: int = 4
-    sa_cycle_length: int = 5
-    enable_mlp_cache: bool = False
     ca_tail_steps: int = 10
     ca_tail_min_layer: int = 20
     mlp_full_reuse_layers: int = 6
@@ -62,25 +58,12 @@ def _boundary_refresh(cfg: GMCConfig, step: int, num_steps: int) -> bool:
     return cfg.force_full_first_last and (step == 0 or step == num_steps - 1)
 
 
-def should_compute_self_attention(
-    cfg: GMCConfig,
-    step: int,
-    num_steps: int,
-    layer_idx: int = 0,
-    depth: int = 1,
-) -> bool:
-    """R_SA(t, l)：n 步循环 SA 调度（``sa_cycle_length`` = n）。
-
-    周期内 pos = step % n：
-    - pos 0：全层计算
-    - pos 1 .. n-1：全层复用本周期第一步的缓存
-    """
-    del layer_idx, depth  # 全层共享同一 SA 调度
+def should_compute_self_attention(cfg: GMCConfig, step: int, num_steps: int) -> bool:
+    """R_SA(t)：式 (eq:sa-schedule)。"""
     if _boundary_refresh(cfg, step, num_steps):
         return True
-
-    cycle = max(cfg.sa_cycle_length, 1)
-    return step % cycle == 0
+    interval = max(cfg.attn_interval, 1)
+    return step % interval == 0
 
 
 def cross_attention_interval(cfg: GMCConfig, step: int, num_steps: int, layer_idx: int) -> int:
@@ -105,15 +88,9 @@ def should_compute_cross_attention(
     return step % interval == 0
 
 
-def is_full_refresh_step(
-    cfg: GMCConfig,
-    step: int,
-    num_steps: int,
-    layer_idx: int = 0,
-    depth: int = 1,
-) -> bool:
-    """DiT 仅 SA：与 ``should_compute_self_attention`` 相同（单层）。"""
-    return should_compute_self_attention(cfg, step, num_steps, layer_idx, depth)
+def is_full_refresh_step(cfg: GMCConfig, step: int, num_steps: int) -> bool:
+    """DiT 仅 SA：与 should_compute_self_attention 相同。"""
+    return should_compute_self_attention(cfg, step, num_steps)
 
 
 def is_mlp_full_refresh(
@@ -122,11 +99,10 @@ def is_mlp_full_refresh(
     num_steps: int,
     layer_idx: int,
     *,
-    depth: int = 1,
     has_cross_attention: bool = False,
 ) -> bool:
     """Attention 刷新步强制 MLP 全量重算。"""
-    if should_compute_self_attention(cfg, step, num_steps, layer_idx, depth=depth):
+    if should_compute_self_attention(cfg, step, num_steps):
         return True
     if has_cross_attention and should_compute_cross_attention(cfg, step, num_steps, layer_idx):
         return True
@@ -134,8 +110,6 @@ def is_mlp_full_refresh(
 
 
 def mlp_fresh_ratio_for_layer(cfg: GMCConfig, layer_idx: int) -> float:
-    if not cfg.enable_mlp_cache:
-        return 1.0
     if layer_idx < cfg.mlp_full_reuse_layers:
         return 0.0
     if layer_idx < cfg.mlp_mid_reuse_max_layer:
@@ -143,12 +117,9 @@ def mlp_fresh_ratio_for_layer(cfg: GMCConfig, layer_idx: int) -> float:
     return cfg.mlp_deep_fresh_ratio
 
 
-def build_sa_refresh_mask(cfg: GMCConfig, num_steps: int, depth: int = 1) -> list[list[bool]]:
-    """预计算 SA 刷新表 [layer][step]（与 ``should_compute_self_attention`` 等价）。"""
-    return [
-        [should_compute_self_attention(cfg, s, num_steps, layer_idx, depth) for s in range(num_steps)]
-        for layer_idx in range(depth)
-    ]
+def build_sa_refresh_mask(cfg: GMCConfig, num_steps: int) -> list[bool]:
+    """预计算 SA 步级刷新表（与 ``should_compute_self_attention`` 等价）。"""
+    return [should_compute_self_attention(cfg, s, num_steps) for s in range(num_steps)]
 
 
 def build_ca_refresh_mask(cfg: GMCConfig, num_steps: int, depth: int) -> list[list[bool]]:

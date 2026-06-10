@@ -25,7 +25,7 @@ def _from_default(name: str, **kwargs) -> dict:
 DEFAULT_GMC_CONFIG = _preset(
     'default',
     GMCConfig(
-        attn_interval=4,
+        attn_interval=3,
         ca_tail_steps=10,
         ca_tail_min_layer=20,
         mlp_full_reuse_layers=6,
@@ -40,6 +40,7 @@ DEFAULT_GMC_CONFIG = _preset(
         spatial_bonus=0.4,
         unify_cfg_indices=True,
         force_full_first_last=True,
+        enable_mlp_cache=False,
         stale_reuse_mode='linear',
     ),
 )
@@ -62,10 +63,10 @@ ALL_PRESETS = {
     ),
     'ultra': _from_default(
         'ultra',
-       attn_interval=0,
+       attn_interval=3,
         mlp_full_reuse_layers=0,
-        mlp_mid_fresh_ratio=0,
-        mlp_deep_fresh_ratio=0,
+        mlp_mid_fresh_ratio=1,
+        mlp_deep_fresh_ratio=1,
     ),
     'extreme': _from_default(
         'extreme',
