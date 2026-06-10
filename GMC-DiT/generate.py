@@ -11,63 +11,21 @@ import torch
 from diffusers.models import AutoencoderKL
 from torchvision.utils import save_image
 
-ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
 GMC_DIT = os.path.dirname(__file__)
-GMC_ROOT = os.path.join(GMC_DIT, '..')
+GMC_ROOT = os.path.abspath(os.path.join(GMC_DIT, '..'))
+DIT_ROOT = os.environ.get('DIT_ROOT', os.path.join(GMC_ROOT, 'DiT'))
+CKPT = os.environ.get(
+    'DIT_CKPT',
+    os.path.join(DIT_ROOT, 'pretrained_models/DiT-XL-2-256x256.pt'),
+)
+VAE_PATH = os.environ.get('VAE_PATH', 'stabilityai/sd-vae-ft-mse')
 
-
-def _resolve_dit_root() -> str:
-    env = os.environ.get('DIT_ROOT')
-    if env and os.path.isdir(env):
-        return env
-    for cand in (
-        '/home/chyao/projects/ToCa/DiT',
-        os.path.join(ROOT, 'ToCa', 'DiT-ToCa'),
-        os.path.join(ROOT, 'DiT-ToCa'),
-        os.path.join(ROOT, 'DiT'),
-    ):
-        if os.path.isdir(cand) and os.path.isdir(os.path.join(cand, 'diffusion')):
-            return cand
+if not os.path.isdir(os.path.join(DIT_ROOT, 'diffusion')):
     raise FileNotFoundError(
-        '找不到 DiT 代码目录（需含 diffusion/）。'
-        '请设置环境变量 DIT_ROOT，例如：\n'
-        '  export DIT_ROOT=/home/chyao/projects/ToCa/DiT'
+        f'未找到 DiT 工程：{DIT_ROOT}\n'
+        '请先运行：bash scripts/setup_dit.sh'
     )
 
-
-def _resolve_ckpt(dit_root: str) -> str:
-    env = os.environ.get('DIT_CKPT')
-    if env and os.path.isfile(env):
-        return env
-    for cand in (
-        os.path.join(dit_root, 'pretrained_models/DiT-XL-2-256x256.pt'),
-        '/home/chyao/projects/ToCa/DiT/pretrained_models/DiT-XL-2-256x256.pt',
-    ):
-        if os.path.isfile(cand):
-            return cand
-    return os.path.join(dit_root, 'pretrained_models/DiT-XL-2-256x256.pt')
-
-
-def _resolve_vae_path() -> str:
-    env = os.environ.get('VAE_PATH')
-    if env:
-        return env
-    for cand in (
-        '/home/chyao/projects/ToCa/pretrained_models/sd-vae-ft-ema',
-        'stabilityai/sd-vae-ft-mse',
-    ):
-        if cand.startswith('/') and os.path.isdir(cand):
-            return cand
-        if not cand.startswith('/'):
-            return cand
-    return 'stabilityai/sd-vae-ft-mse'
-
-
-DIT_ROOT = _resolve_dit_root()
-CKPT = _resolve_ckpt(DIT_ROOT)
-VAE_PATH = _resolve_vae_path()
-
-sys.path.insert(0, ROOT)
 sys.path.insert(0, DIT_ROOT)
 sys.path.insert(0, GMC_ROOT)
 sys.path.insert(0, GMC_DIT)
@@ -78,6 +36,11 @@ from gmc_model import DiTWithGMC  # noqa: E402
 
 
 def load_ckpt(model, path: str):
+    if not os.path.isfile(path):
+        raise FileNotFoundError(
+            f'未找到 DiT 权重：{path}\n'
+            '请先运行：bash scripts/setup_dit.sh'
+        )
     ckpt = torch.load(path, map_location='cpu')
     model.load_state_dict(ckpt.get('ema', ckpt.get('model', ckpt)), strict=False)
 
@@ -92,6 +55,7 @@ def parse_args():
     p.add_argument('--seed', type=int, default=0)
     p.add_argument('--out', default='gmc_dit_sample.png')
     p.add_argument('--no_cache', action='store_true')
+    p.add_argument('--vae_path', default=VAE_PATH)
     return p.parse_args()
 
 
@@ -116,7 +80,7 @@ def main():
     diffusion = create_diffusion(str(args.steps))
     model.set_sampling_steps(args.steps)
 
-    vae = AutoencoderKL.from_pretrained(VAE_PATH).to(device)
+    vae = AutoencoderKL.from_pretrained(args.vae_path).to(device)
     vae.eval()
 
     n = 2 if args.cfg > 1.0 else 1
