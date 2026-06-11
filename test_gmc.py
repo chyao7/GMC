@@ -61,28 +61,29 @@ def select_fresh_indices_ref(score, fresh_ratio, unify_cfg=False, cache_index=No
 
 
 def test_sa_schedule():
-    cfg = GMCConfig(sa_cycle_length=5, force_full_first_last=True)
+    cfg = GMCConfig(casa_interval=4, force_full_first_last=True)
     depth = 28
-    # 首末步强制全量
     assert should_compute_self_attention(cfg, 0, 20, 0, depth)
     assert should_compute_self_attention(cfg, 19, 20, 0, depth)
-    # n=5 循环：pos0 计算, pos1..4 复用
-    assert should_compute_self_attention(cfg, 5, 20, 0, depth)   # pos0
-    assert not should_compute_self_attention(cfg, 6, 20, 0, depth)  # pos1
-    assert not should_compute_self_attention(cfg, 7, 20, 0, depth)  # pos2
-    assert not should_compute_self_attention(cfg, 8, 20, 0, depth)  # pos3
-    assert not should_compute_self_attention(cfg, 9, 20, 0, depth)  # pos4
-    assert not should_compute_self_attention(cfg, 8, 20, 20, depth)  # 各层一致
+    assert should_compute_self_attention(cfg, 4, 20, 0, depth)
+    assert not should_compute_self_attention(cfg, 1, 20, 0, depth)
+    assert not should_compute_self_attention(cfg, 2, 20, 0, depth)
+    assert not should_compute_self_attention(cfg, 3, 20, 0, depth)
+    assert should_compute_self_attention(cfg, 8, 20, 0, depth)
+    assert should_compute_self_attention(cfg, 8, 20, 20, depth)
 
 
 def test_ca_tail_schedule():
-    cfg = GMCConfig(attn_interval=4, ca_tail_steps=10, ca_tail_min_layer=20)
-    # 尾段深层：interval=2
-    assert cross_attention_interval(cfg, 15, 20, 25) == 2
-    assert should_compute_cross_attention(cfg, 14, 20, 25)
-    assert not should_compute_cross_attention(cfg, 13, 20, 25)
-    # 浅层尾段：interval=4
-    assert cross_attention_interval(cfg, 15, 20, 10) == 4
+    cfg = GMCConfig(casa_interval=4)
+    # 尾段最后 20//5=4 步（step>=16）：interval=2
+    assert cross_attention_interval(cfg, 16, 20, 10) == 2
+    assert cross_attention_interval(cfg, 16, 20, 25) == 2
+    assert should_compute_cross_attention(cfg, 16, 20, 25)
+    assert not should_compute_cross_attention(cfg, 17, 20, 25)
+    # 前期：interval=4
+    assert cross_attention_interval(cfg, 8, 20, 25) == 4
+    assert should_compute_cross_attention(cfg, 8, 20, 25)
+    assert not should_compute_cross_attention(cfg, 9, 20, 25)
 
 
 def test_mlp_rho():
@@ -93,15 +94,15 @@ def test_mlp_rho():
 
 
 def test_mlp_full_refresh():
-    cfg = GMCConfig(sa_cycle_length=5)
+    cfg = GMCConfig(casa_interval=4)
     depth = 28
-    assert is_mlp_full_refresh(cfg, 5, 20, 25, depth=depth, has_cross_attention=True)
-    assert not is_mlp_full_refresh(cfg, 6, 20, 25, depth=depth, has_cross_attention=True)
-    assert is_mlp_full_refresh(cfg, 10, 20, 25, depth=depth, has_cross_attention=True)
+    assert is_mlp_full_refresh(cfg, 4, 20, 25, depth=depth, has_cross_attention=True)
+    assert not is_mlp_full_refresh(cfg, 5, 20, 25, depth=depth, has_cross_attention=True)
+    assert is_mlp_full_refresh(cfg, 8, 20, 25, depth=depth, has_cross_attention=True)
 
 
 def test_precomputed_masks():
-    cfg = GMCConfig(attn_interval=4, ca_tail_steps=10, ca_tail_min_layer=20, enable_mlp_cache=True)
+    cfg = GMCConfig(casa_interval=4, enable_mlp_cache=True)
     steps, depth = 20, 28
     sa = build_sa_refresh_mask(cfg, steps, depth)
     ca = build_ca_refresh_mask(cfg, steps, depth)
@@ -143,7 +144,7 @@ def apply_linear_extrapolation_ref(mlp_out, state, cfg, fresh_indices=None, all_
     if state.cache_index is None:
         return mlp_out
 
-    interval = max(cfg.attn_interval, 1)
+    interval = max(cfg.casa_interval, 1)
     gap = state.cache_index.clamp(min=1).float().unsqueeze(-1)
 
     if state.mlp_last_written is not None and state.mlp_prev_written is not None:
@@ -236,6 +237,22 @@ def test_gather_tokens_equivalence():
     out = gather_tokens(tokens, idx)
     assert torch.equal(ref, out)
 
+
+
+def test_mlp_v4_schedule():
+    from gmc_utils import should_compute_mlp
+    cfg = GMCConfig(mlp_anchor_step=30, mlp_interval=4, enable_mlp_cache=False)
+    steps = 50
+    for s in range(30):
+        assert should_compute_mlp(cfg, s, steps)
+    assert should_compute_mlp(cfg, 30, steps)
+    assert not should_compute_mlp(cfg, 31, steps)
+    assert not should_compute_mlp(cfg, 32, steps)
+    assert not should_compute_mlp(cfg, 33, steps)
+    assert should_compute_mlp(cfg, 34, steps)
+    assert should_compute_mlp(cfg, steps - 1, steps)
+
+
 if __name__ == '__main__':
     test_sa_schedule()
     test_ca_tail_schedule()
@@ -246,4 +263,5 @@ if __name__ == '__main__':
     test_compute_cache_score_buf()
     test_apply_linear_extrap_equivalence()
     test_gather_tokens_equivalence()
+    test_mlp_v4_schedule()
     print('All GMC unit tests passed.')

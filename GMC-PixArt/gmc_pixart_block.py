@@ -1,4 +1,4 @@
-"""PixArt Block + GMC：SA/CA 步级复用 + MLP token 级分层刷新。"""
+"""统一 PixArt Block：结构一致，按 cache_dic 切换 ToCa / GMC 缓存策略。"""
 
 from __future__ import annotations
 
@@ -18,6 +18,9 @@ from gmc_utils import (
     GMCConfig,
     LayerCacheState,
     compute_cache_score,
+    resolve_mlp_anchor,
+    should_compute_mlp,
+    should_store_mlp_reuse_output,
     gather_tokens,
     is_mlp_full_refresh_from_masks,
     merge_mlp_partial,
@@ -27,9 +30,9 @@ from gmc_utils import (
 
 
 def _import_pixart_blocks():
-    pixart_root = Path(__file__).resolve().parents[2] / 'PixArt-alpha-ToCa'
-    if str(pixart_root) not in sys.path:
-        sys.path.insert(0, str(pixart_root))
+    gmc_pixart = Path(__file__).resolve().parent
+    if str(gmc_pixart) not in sys.path:
+        sys.path.insert(0, str(gmc_pixart))
     from diffusion.model.nets.PixArt_blocks import (  # noqa: WPS433
         MultiHeadCrossAttention,
         WindowAttention,
@@ -40,9 +43,40 @@ def _import_pixart_blocks():
 
 WindowAttention, MultiHeadCrossAttention, t2i_modulate = _import_pixart_blocks()
 
+BASELINE_CACHE_KWARGS = dict(
+    cache_type='attention',
+    fresh_ratio=0.30,
+    fresh_threshold=1,
+    force_fresh='global',
+    ratio_scheduler='ToCa',
+    soft_fresh_weight=0.25,
+)
+
+TOCA_CACHE_KWARGS = dict(
+    cache_type='attention',
+    fresh_ratio=0.30,
+    fresh_threshold=3,
+    force_fresh='global',
+    ratio_scheduler='ToCa',
+    soft_fresh_weight=0.25,
+)
+
+
+def _import_toca_cache_fns():
+    gmc_pixart = Path(__file__).resolve().parent
+    if str(gmc_pixart) not in sys.path:
+        sys.path.insert(0, str(gmc_pixart))
+    from diffusion.model.cache_functions import (  # noqa: WPS433
+        cache_cutfresh,
+        force_init,
+        global_force_fresh,
+        update_cache,
+    )
+    return global_force_fresh, cache_cutfresh, update_cache, force_init
+
 
 class PixArtBlockGMC(nn.Module):
-    """GMC PixArt Block。"""
+    """统一 PixArt Block（权重与原版 PixArtBlock 相同，缓存策略由 cache_dic 决定）。"""
 
     def __init__(
         self,
@@ -170,10 +204,60 @@ class PixArtBlockGMC(nn.Module):
         state.mlp_out_prev_step = state.mlp_out.detach()
         return x + self.drop_path(gate_mlp * state.mlp_out)
 
-    def forward(self, x, y, t, current, cache_dic, mask=None, **kwargs):
-        if not cache_dic.get('gmc_mode', False):
-            raise RuntimeError('PixArtBlockGMC requires cache_dic["gmc_mode"]=True')
+    def _forward_toca(self, x, y, t, current, cache_dic, mask=None, **kwargs):
+        """ToCa 缓存策略（含 fresh_threshold=1 的基线全算模式）。"""
+        global_force_fresh, cache_cutfresh, update_cache, force_init = _import_toca_cache_fns()
 
+        b, n, _ = x.shape
+        shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = (
+            self.scale_shift_table[None] + t.reshape(b, 6, -1)
+        ).chunk(6, dim=1)
+        is_force_fresh = global_force_fresh(cache_dic, current)
+        current['is_force_fresh'] = is_force_fresh
+
+        if is_force_fresh:
+            current['module'] = 'attn'
+            cache_dic['cache'][-1][current['layer']][current['module']], cache_dic['attn_map'][-1][current['layer']] = (
+                self.attn(t2i_modulate(self.norm1(x), shift_msa, scale_msa))
+            )
+            force_init(cache_dic, current, x)
+            x = x + self.drop_path(gate_msa * cache_dic['cache'][-1][current['layer']][current['module']])
+
+            current['module'] = 'cross-attn'
+            cache_dic['cache'][-1][current['layer']][current['module']], cache_dic['cross_attn_map'][-1][current['layer']] = (
+                self.cross_attn(x, y, mask)
+            )
+            force_init(cache_dic, current, x)
+            x = x + cache_dic['cache'][-1][current['layer']][current['module']]
+
+            current['module'] = 'mlp'
+            cache_dic['cache'][-1][current['layer']][current['module']] = (
+                self.mlp(t2i_modulate(self.norm2(x), shift_mlp, scale_mlp))
+            )
+            force_init(cache_dic, current, x)
+            x = x + self.drop_path(gate_mlp * cache_dic['cache'][-1][current['layer']][current['module']])
+        else:
+            current['module'] = 'attn'
+            x = x + self.drop_path(gate_msa * cache_dic['cache'][-1][current['layer']][current['module']])
+
+            current['module'] = 'cross-attn'
+            fresh_indices, fresh_tokens = cache_cutfresh(cache_dic, x, current)
+            fresh_tokens, fresh_cross_attn_map = self.cross_attn(fresh_tokens, y, mask)
+            update_cache(
+                fresh_indices, fresh_tokens=fresh_tokens, cache_dic=cache_dic,
+                current=current, fresh_attn_map=fresh_cross_attn_map,
+            )
+            x = x + cache_dic['cache'][-1][current['layer']][current['module']]
+
+            current['module'] = 'mlp'
+            fresh_indices, fresh_tokens = cache_cutfresh(cache_dic, x, current)
+            fresh_tokens = self.mlp(t2i_modulate(self.norm2(fresh_tokens), shift_mlp, scale_mlp))
+            update_cache(fresh_indices, fresh_tokens=fresh_tokens, cache_dic=cache_dic, current=current)
+            x = x + self.drop_path(gate_mlp * cache_dic['cache'][-1][current['layer']][current['module']])
+
+        return x
+
+    def _forward_gmc(self, x, y, t, current, cache_dic, mask=None, **kwargs):
         cfg: GMCConfig = cache_dic['gmc_cfg']
         stats = cache_dic['stats']
         state = self._layer_state(cache_dic)
@@ -183,6 +267,7 @@ class PixArtBlockGMC(nn.Module):
         layer_fresh_ratio = cache_dic['layer_rho'][self.layer_idx]
 
         b, n, _ = x.shape
+        t = t.to(device=x.device, dtype=x.dtype)
         shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = (
             self.scale_shift_table[None] + t.reshape(b, 6, -1)
         ).chunk(6, dim=1)
@@ -209,18 +294,37 @@ class PixArtBlockGMC(nn.Module):
         x = x + ca_out
 
         mlp_input = t2i_modulate(self.norm2(x), shift_mlp, scale_mlp)
-        if not cfg.enable_mlp_cache:
-            mlp_out = self.mlp(mlp_input)
-            return x + self.drop_path(gate_mlp * mlp_out)
-        score_map = state.cross_attn_map if state.cross_attn_map is not None else attn_map
-        return self._forward_mlp_gmc(
+        num_steps = current['num_steps']
+        if cfg.enable_mlp_cache:
+            score_map = state.cross_attn_map if state.cross_attn_map is not None else attn_map
+            return self._forward_mlp_gmc(
             x, mlp_input, gate_mlp, cfg, state, step, score_map, stats,
             sa_refresh, ca_refresh, layer_fresh_ratio,
         )
 
+        if should_compute_mlp(cfg, step, num_steps):
+            mlp_out = self.mlp(mlp_input)
+            anchor = resolve_mlp_anchor(cfg)
+            if anchor is not None and should_store_mlp_reuse_output(cfg, step, anchor):
+                state.mlp_anchor_out = mlp_out
+            return x + self.drop_path(gate_mlp * mlp_out)
+
+        stats['mlp_skipped'] += n * b
+        if state.mlp_anchor_out is not None:
+            mlp_out = state.mlp_anchor_out
+        else:
+            mlp_out = self.mlp(mlp_input)
+            state.mlp_anchor_out = mlp_out
+        return x + self.drop_path(gate_mlp * mlp_out)
+
+    def forward(self, x, y, t, current, cache_dic, mask=None, **kwargs):
+        if cache_dic.get('gmc_mode', False):
+            return self._forward_gmc(x, y, t, current, cache_dic, mask, **kwargs)
+        return self._forward_toca(x, y, t, current, cache_dic, mask, **kwargs)
+
 
 def apply_gmc_blocks(model, depth: int | None = None) -> int:
-    """将 PixArt 模型的 blocks 替换为 PixArtBlockGMC。"""
+    """将 PixArt blocks 替换为统一 Block（三种缓存策略共用同一结构）。"""
     depth = depth or len(model.blocks)
     new_blocks = nn.ModuleList([
         PixArtBlockGMC.from_pixart_block(block, layer_idx=i)

@@ -14,6 +14,10 @@ GMC/
 │   ├── config.py         # 默认/消融 preset
 │   └── generate.py       # 生成示例
 └── GMC-PixArt/           # 文本到图像 PixArt-α
+    ├── diffusion/           # PixArt 推理代码（vendored）
+    ├── tools/               # 权重加载等
+    ├── diffusion/           # PixArt 推理代码（vendored）
+    ├── tools/               # 权重加载等
     ├── gmc_pixart_block.py  # SA+CA 步级 + MLP 分层
     ├── gmc_cache.py
     ├── config.py
@@ -64,7 +68,7 @@ python GMC/GMC-PixArt/generate.py \
 ## 与 DGC 的关系
 
 - **GMC-DiT** 逻辑与 `DGC/dgc_model.py` 一致，命名与论文对齐，并独立维护于 `GMC/`。
-- **GMC-PixArt** 在 ToCa 版 PixArt 上新增：CA 步级复用（含尾段 ⌊n/2⌋）、MLP 分层 ρ + linear stale，替代原 ToCa token 级 CA 策略。
+- **GMC-PixArt** 在 PixArt-α 上新增：CA 步级复用（含尾段 ⌊n/2⌋）、MLP 分层 ρ + linear stale。
 
 ## API 示例
 

@@ -24,7 +24,10 @@ from gmc_utils import (
     gather_tokens,
     is_full_refresh_step,
     merge_mlp_partial,
+    resolve_mlp_anchor,
     select_fresh_indices,
+    should_compute_mlp,
+    should_store_mlp_reuse_output,
     update_written_history,
     _store_mlp_out_prev_step,
 )
@@ -251,6 +254,8 @@ class DiTBlockWithGMC(nn.Module):
         gate_mlp: torch.Tensor,
         gmc_cfg: GMCConfig,
         compute_sa: bool,
+        step: int,
+        num_steps: int,
     ) -> torch.Tensor:
         state = self.cache_state
         b, n, _ = x.shape
@@ -264,14 +269,25 @@ class DiTBlockWithGMC(nn.Module):
             attn_out = state.attn_out
 
         x = x + gate_msa.unsqueeze(1) * attn_out
-        if not gmc_cfg.enable_mlp_cache:
-            mlp_out = self.mlp(mlp_input_fn(x))
-        else:
+        mlp_input = mlp_input_fn(x)
+        if gmc_cfg.enable_mlp_cache:
             attn_map = getattr(self.attn, 'last_attn_map', None)
             full_refresh = compute_sa
             mlp_out = self._forward_mlp_cached(
                 x, mlp_input_fn, gmc_cfg, state, b, n, attn_map, full_refresh, self._cached_fresh_ratio,
             )
+        elif should_compute_mlp(gmc_cfg, step, num_steps):
+            mlp_out = self.mlp(mlp_input)
+            anchor = resolve_mlp_anchor(gmc_cfg)
+            if anchor is not None and should_store_mlp_reuse_output(gmc_cfg, step, anchor):
+                state.mlp_anchor_out = mlp_out
+        else:
+            self.stats['mlp_skipped'] += 1
+            if state.mlp_anchor_out is not None:
+                mlp_out = state.mlp_anchor_out
+            else:
+                mlp_out = self.mlp(mlp_input)
+                state.mlp_anchor_out = mlp_out
         x = x + gate_mlp.unsqueeze(1) * mlp_out
         return x
 
@@ -298,6 +314,8 @@ class DiTBlockWithGMC(nn.Module):
                 gate_msa, gate_mlp,
                 cache_ctx['gmc_cfg'],
                 compute_sa,
+                step,
+                cache_ctx['num_steps'],
             )
 
         attn_out = self.attn(attn_input, store_attn_map=False)

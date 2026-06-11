@@ -27,9 +27,9 @@ from gmc_utils import (
 
 
 def _import_pixart_blocks():
-    pixart_root = Path(__file__).resolve().parents[2] / 'PixArt-alpha-ToCa'
-    if str(pixart_root) not in sys.path:
-        sys.path.insert(0, str(pixart_root))
+    gmc_pixart = Path(__file__).resolve().parent
+    if str(gmc_pixart) not in sys.path:
+        sys.path.insert(0, str(gmc_pixart))
     from diffusion.model.nets.PixArt_blocks import (  # noqa: WPS433
         MultiHeadCrossAttention,
         WindowAttention,
@@ -183,6 +183,7 @@ class PixArtBlockGMC(nn.Module):
         layer_fresh_ratio = cache_dic['layer_rho'][self.layer_idx]
 
         b, n, _ = x.shape
+        t = t.to(device=x.device, dtype=x.dtype)
         shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = (
             self.scale_shift_table[None] + t.reshape(b, 6, -1)
         ).chunk(6, dim=1)

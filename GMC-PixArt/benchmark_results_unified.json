@@ -1,0 +1,23 @@
+{
+  "speed": {
+    "baseline": {
+      "mean_s": 129.20747392500198,
+      "std_s": 0.0,
+      "runs": 1
+    },
+    "toca": {
+      "mean_s": 76.24971839600039,
+      "std_s": 0.0,
+      "runs": 1
+    },
+    "gmc": {
+      "mean_s": 85.81441803000052,
+      "std_s": 0.0,
+      "runs": 1
+    }
+  },
+  "fid": {
+    "fid_vs_baseline_toca": 208.79181672052493,
+    "fid_vs_baseline_gmc": 175.86302452397592
+  }
+}

@@ -1,11 +1,11 @@
 """Granularity-Matched Caching (GMC) 共享工具。
 
-对应论文 §3.3–§3.4：
-- Self-attention：n 步循环调度（v2），周期第一步全算，后续 n-1 步复用该步缓存
-- Cross-attention 尾段（后 T_tail 步 & 深层 L>=L_ca）：间隔 floor(n/2)
-- MLP：分层 token 级 fresh 比例 + linear stale 外推
-
-v1 步级等间隔调度见 ``gmc_utils_v1.py``。
+PixArt 步级调度（默认）：
+- 首末 step：SA / CA / MLP 强制全算
+- SA / CA 前期：共用 ``casa_interval``（默认 4），step % n == 0 全算，其后 n-1 步复用
+- CA 尾段（最后 num_steps//5 步）：更新频率减半（n → n//2）
+- MLP：step < mlp_anchor_step 全算；之后每 ``mlp_interval`` 步刷新一次
+- MLP token 级（``enable_mlp_cache=True``）：分层 ρ + fresh score
 """
 
 from __future__ import annotations
@@ -20,13 +20,18 @@ import torch.nn.functional as F
 
 @dataclass
 class GMCConfig:
-    """GMC 默认超参与论文一致。"""
+    """GMC 调度超参。"""
 
-    attn_interval: int = 4
-    sa_cycle_length: int = 5
+    casa_interval: int = 4
+    mlp_anchor_step: int = 30
+    mlp_interval: int = 4
     enable_mlp_cache: bool = False
-    ca_tail_steps: int = 10
-    ca_tail_min_layer: int = 20
+    # legacy（若显式传入则覆盖上面对应字段）
+    attn_interval: int | None = None
+    sa_cycle_length: int | None = None
+    mlp_post_anchor_interval: int | None = None
+    ca_tail_steps: int | None = None
+    ca_tail_min_layer: int | None = None
     mlp_full_reuse_layers: int = 6
     mlp_mid_reuse_max_layer: int = 18
     mlp_mid_fresh_ratio: float = 0.025
@@ -43,6 +48,14 @@ class GMCConfig:
     force_full_first_last: bool = True
     stale_reuse_mode: str = 'linear'  # 'linear' | 'copy'
 
+    def __post_init__(self) -> None:
+        if self.attn_interval is not None:
+            self.casa_interval = self.attn_interval
+        if self.sa_cycle_length is not None:
+            self.casa_interval = self.sa_cycle_length
+        if self.mlp_post_anchor_interval is not None:
+            self.mlp_interval = self.mlp_post_anchor_interval
+
 
 @dataclass
 class LayerCacheState:
@@ -56,10 +69,47 @@ class LayerCacheState:
     mlp_prev_written: Optional[torch.Tensor] = None
     cache_index: Optional[torch.Tensor] = None
     score_buf: Optional[torch.Tensor] = None
+    mlp_anchor_out: Optional[torch.Tensor] = None
+
+
+
+
+def resolve_mlp_anchor(cfg: GMCConfig) -> Optional[int]:
+    if cfg.mlp_anchor_step <= 0:
+        return None
+    return cfg.mlp_anchor_step
+
+
+def should_compute_mlp(cfg: GMCConfig, step: int, num_steps: int) -> bool:
+    if cfg.enable_mlp_cache:
+        return True
+    if _boundary_refresh(cfg, step, num_steps):
+        return True
+    anchor = resolve_mlp_anchor(cfg)
+    if anchor is None:
+        return True
+    if step < anchor:
+        return True
+    interval = max(cfg.mlp_interval, 1)
+    return (step - anchor) % interval == 0
+
+
+def should_store_mlp_reuse_output(cfg: GMCConfig, step: int, anchor: int) -> bool:
+    return step >= anchor
+
+
+def mlp_anchor_step(cfg: GMCConfig, num_steps: int = 0) -> Optional[int]:
+    del num_steps
+    return resolve_mlp_anchor(cfg)
 
 
 def _boundary_refresh(cfg: GMCConfig, step: int, num_steps: int) -> bool:
     return cfg.force_full_first_last and (step == 0 or step == num_steps - 1)
+
+
+def _ca_tail_start(num_steps: int) -> int:
+    """CA 尾段起点：最后 num_steps // 5 步。"""
+    return num_steps - max(1, num_steps // 5)
 
 
 def should_compute_self_attention(
@@ -69,27 +119,21 @@ def should_compute_self_attention(
     layer_idx: int = 0,
     depth: int = 1,
 ) -> bool:
-    """R_SA(t, l)：n 步循环 SA 调度（``sa_cycle_length`` = n）。
-
-    周期内 pos = step % n：
-    - pos 0：全层计算
-    - pos 1 .. n-1：全层复用本周期第一步的缓存
-    """
-    del layer_idx, depth  # 全层共享同一 SA 调度
+    """R_SA(t)：首末步全算；否则每 ``casa_interval`` 步刷新一次。"""
+    del layer_idx, depth
     if _boundary_refresh(cfg, step, num_steps):
         return True
-
-    cycle = max(cfg.sa_cycle_length, 1)
-    return step % cycle == 0
+    interval = max(cfg.casa_interval, 1)
+    return step % interval == 0
 
 
 def cross_attention_interval(cfg: GMCConfig, step: int, num_steps: int, layer_idx: int) -> int:
-    """n_ca(t,l)：尾段区域用 floor(n/2)，其余用 n。"""
-    n = max(cfg.attn_interval, 1)
-    in_tail = (
-        step >= num_steps - cfg.ca_tail_steps
-        and layer_idx >= cfg.ca_tail_min_layer
-    )
+    """n_ca(t,l)：前期 n=casa_interval；尾段（最后 1/5 步）n//2。"""
+    n = max(cfg.casa_interval, 1)
+    if cfg.ca_tail_steps is not None and cfg.ca_tail_min_layer is not None:
+        in_tail = step >= num_steps - cfg.ca_tail_steps and layer_idx >= cfg.ca_tail_min_layer
+    else:
+        in_tail = step >= _ca_tail_start(num_steps)
     if in_tail:
         return max(1, n // 2)
     return n
@@ -396,7 +440,7 @@ def apply_linear_extrapolation(
     if state.cache_index is None:
         return mlp_out
 
-    interval = max(cfg.attn_interval, 1)
+    interval = max(cfg.casa_interval, 1)
     gap = state.cache_index.clamp(min=1).float().unsqueeze(-1)
 
     if state.mlp_last_written is not None and state.mlp_prev_written is not None:

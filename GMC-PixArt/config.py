@@ -10,9 +10,9 @@ if str(_GMC_ROOT) not in sys.path:
 from gmc_utils import GMCConfig
 
 DEFAULT_GMC_PIXART_CONFIG = GMCConfig(
-    attn_interval=4,
-    ca_tail_steps=10,
-    ca_tail_min_layer=20,
+    casa_interval=4,
+    mlp_anchor_step=30,
+    mlp_interval=4,
     mlp_full_reuse_layers=6,
     mlp_mid_reuse_max_layer=18,
     mlp_mid_fresh_ratio=0.025,
