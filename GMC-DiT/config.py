@@ -25,9 +25,9 @@ def _from_default(name: str, **kwargs) -> dict:
 DEFAULT_GMC_CONFIG = _preset(
     'default',
     GMCConfig(
-        attn_interval=3,
-        ca_tail_steps=10,
-        ca_tail_min_layer=20,
+        casa_interval=4,
+        mlp_anchor_step=30,
+        mlp_interval=4,
         mlp_full_reuse_layers=6,
         mlp_mid_reuse_max_layer=18,
         mlp_mid_fresh_ratio=0.025,
@@ -41,7 +41,6 @@ DEFAULT_GMC_CONFIG = _preset(
         unify_cfg_indices=True,
         force_full_first_last=True,
         enable_mlp_cache=False,
-        stale_reuse_mode='linear',
     ),
 )
 

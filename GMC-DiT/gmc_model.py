@@ -118,7 +118,7 @@ class AttentionWithMap(Attention):
 
 
 class DiTBlockWithGMC(nn.Module):
-    """GMC DiT Block：SA 步级复用 + MLP 分层 token 级 linear 复用。"""
+    """GMC DiT Block：SA / MLP 步级复用（与 PixArt GMC 路径一致）。"""
 
     def __init__(
         self,
